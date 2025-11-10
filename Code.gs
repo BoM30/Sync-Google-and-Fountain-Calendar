@@ -335,20 +335,20 @@ function syncCalendars_Full() {
 
 /**
  * [NEW HELPER v12.0]
- * Advances the batch counter in the cache after a successful run.
+ * Advances the batch counter in the script properties after a successful run.
  */
 function advanceBatchCounter() {
-  const scriptCache = CacheService.getScriptCache();
-  const cacheKey = 'fullSync_currentBatch';
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const propertyKey = 'fullSync_currentBatch';
   try {
-    let currentBatch = parseInt(scriptCache.get(cacheKey), 10);
+    let currentBatch = parseInt(scriptProperties.getProperty(propertyKey), 10);
     if (isNaN(currentBatch) || currentBatch <= 0) {
       currentBatch = 1;
     }
-    scriptCache.put(cacheKey, (currentBatch + 1).toString(), 3600); // Store for 1 hour
-    log('Advanced batch counter to ' + (currentBatch + 1) + '.', 'DEBUG');
+    const nextBatch = currentBatch + 1;
+    scriptProperties.setProperty(propertyKey, nextBatch.toString());
   } catch (e) {
-    log('❌ CRITICAL ERROR: Could not advance the batch counter in the cache. Error: ' + e.toString(), 'NORMAL');
+    log('❌ CRITICAL ERROR: Could not advance the batch counter in Script Properties. Error: ' + e.toString(), 'NORMAL');
   }
 }
 
@@ -602,18 +602,19 @@ function findGCalDeltas(cachedEvents, currentEvents) {
 /**
  * [NEW HELPER v12.0]
  * Manages batching of recruiters for the full sync.
- * Uses CacheService to track the current batch number.
+ * Uses PropertiesService to track the current batch number.
  */
 function getNextRecruiterBatch(config, allRecruiterConfigs) {
-  const scriptCache = CacheService.getScriptCache();
-  const cacheKey = 'fullSync_currentBatch';
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const propertyKey = 'fullSync_currentBatch';
   const batchSize = parseInt(config.RECRUITER_BATCH_SIZE, 10) || 10;
 
   const allRecruiterEmails = [...new Set(allRecruiterConfigs.map(c => c.email))];
   const totalBatches = Math.ceil(allRecruiterEmails.length / batchSize);
 
-  // Get current batch number from cache, or start at 1
-  let currentBatch = parseInt(scriptCache.get(cacheKey), 10);
+  // Get current batch number from properties, or start at 1
+  const propertyValue = scriptProperties.getProperty(propertyKey);
+  let currentBatch = parseInt(propertyValue, 10);
   if (isNaN(currentBatch) || currentBatch <= 0) {
     currentBatch = 1;
   }
@@ -621,7 +622,7 @@ function getNextRecruiterBatch(config, allRecruiterConfigs) {
   // If the current batch number is greater than the total, we're done.
   // Reset the counter to 1 for the next nightly cycle.
   if (currentBatch > totalBatches) {
-    scriptCache.put(cacheKey, '1', 86400); // Reset for next day
+    scriptProperties.setProperty(propertyKey, '1'); // Reset for next day
     return { currentBatch: currentBatch, totalBatches: totalBatches, recruiterEmailsForBatch: [] };
   }
 
