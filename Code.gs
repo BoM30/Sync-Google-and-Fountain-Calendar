@@ -197,11 +197,6 @@ function syncCalendars_Full() {
   }
 
   log('🚀 Starting Proactive Fountain Calendar Sync...', 'NORMAL');
-  const allFlatRecruiterConfigs = loadRecruiterConfig(config.GOOGLE_SHEET_ID);
-  if (!allFlatRecruiterConfigs || allFlatRecruiterConfigs.length === 0) {
-    log('🛑 Halting execution: No valid recruiter configurations found in the Google Sheet.', 'NORMAL');
-    return;
-  }
  
   // v12.0: Filter all configs down to just the ones in the current batch
   const recruiterEmailSet = new Set(recruiterEmailsForBatch);
