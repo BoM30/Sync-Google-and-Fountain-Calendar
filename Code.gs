@@ -113,7 +113,13 @@ function setupScriptProperties() {
      * Set to 'true' to allow syncCalendars_Full to run *outside* of quiet hours.
      * WARNING: Set back to 'false' for normal operation.
      */
-    'OVERRIDE_QUIET_HOURS_FULL_SYNC': 'false'
+    'OVERRIDE_QUIET_HOURS_FULL_SYNC': 'false',
+   
+    /**
+     * NEW v12.0: Recruiter Batch Size
+     * Number of recruiters to process in a single execution of syncCalendars_Full.
+     */
+    'RECRUITER_BATCH_SIZE': '10'
   };
 
   try {
@@ -162,7 +168,23 @@ function syncCalendars_Full() {
   }
   // --- End Quiet Hours Check ---
 
-  log('🚀 Starting NIGHTLY FULL SYNC (v11.4)...', 'NORMAL');
+  log('🚀 Starting NIGHTLY FULL SYNC (v12.0)...', 'NORMAL');
+ 
+  const allFlatRecruiterConfigs = loadRecruiterConfig(config.GOOGLE_SHEET_ID);
+  if (!allFlatRecruiterConfigs || allFlatRecruiterConfigs.length === 0) {
+    log('🛑 Halting execution: No valid recruiter configurations found in the Google Sheet.', 'NORMAL');
+    return;
+  }
+
+  // --- v12.0: Batch Processing Logic ---
+  const { currentBatch, totalBatches, recruiterEmailsForBatch } = getNextRecruiterBatch(config, allFlatRecruiterConfigs);
+  if (recruiterEmailsForBatch.length === 0 && totalBatches > 0) {
+    log('✅ All recruiter batches have been processed. Nightly sync is complete until the next cycle.', 'NORMAL');
+    return; // Exit if all batches are done
+  }
+  log('Processing Recruiter Batch ' + currentBatch + ' of ' + totalBatches + ' (' + recruiterEmailsForBatch.length + ' recruiters).', 'NORMAL');
+  // --- End Batch Processing Logic ---
+
 
   if (!config.GOOGLE_SHEET_ID || config.GOOGLE_SHEET_ID.includes('YOUR_')) {
     log('🛑 ERROR: GOOGLE_SHEET_ID is not configured. Please run setupScriptProperties.', 'NORMAL');
@@ -175,13 +197,19 @@ function syncCalendars_Full() {
   }
 
   log('🚀 Starting Proactive Fountain Calendar Sync...', 'NORMAL');
-  const flatRecruiterConfigs = loadRecruiterConfig(config.GOOGLE_SHEET_ID);
-  if (!flatRecruiterConfigs || flatRecruiterConfigs.length === 0) {
-    log('🛑 Halting execution: No valid recruiter configurations found in the Google Sheet.', 'NORMAL');
-    return;
-  }
+ 
+  // v12.0: Filter all configs down to just the ones in the current batch
+  const recruiterEmailSet = new Set(recruiterEmailsForBatch);
+  const flatRecruiterConfigs = allFlatRecruiterConfigs.filter(c => recruiterEmailSet.has(c.email));
 
+  // v12.0: Group only the batch recruiters
   const groupedConfigs = groupConfigsByRecruiter(flatRecruiterConfigs);
+ 
+  // v12.0: If, after filtering, there are no recruiters to process for this batch, exit.
+  if (Object.keys(groupedConfigs).length === 0) {
+     log('No recruiters found for the current batch. Exiting.', 'NORMAL');
+     return;
+  }
   const daysToSync = parseInt(config.DAYS_TO_SYNC_IN_FUTURE, 10) || 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -279,24 +307,49 @@ function syncCalendars_Full() {
     log(e.stack, 'DEBUG'); // Log stack trace in debug mode
   }
 
-  // --- v11.0: NEW CACHE PRIMING STEP ---
-  log('\n--- Priming GCal Cache for Delta Sync ---', 'NORMAL');
+  // --- v12.0: MODIFIED CACHE PRIMING STEP ---
+  log('\n--- Priming GCal Cache for Delta Sync (Batch ' + currentBatch + '/' + totalBatches + ') ---', 'NORMAL');
   try {
     const scriptCache = CacheService.getScriptCache();
     for (const email in allRecruiterEvents) {
-      const cacheKey = 'gcal_' + email;
-      const eventsToCache = allRecruiterEvents[email];
-      
-      // Store for 23 hours (82800 seconds). Next full sync will refresh it.
-      scriptCache.put(cacheKey, JSON.stringify(eventsToCache), 82800);
-      log('✅ Successfully primed cache for ' + email + ' with ' + eventsToCache.length + ' events.', 'NORMAL');
+      // Only prime the cache for recruiters in the current batch
+      if (recruiterEmailsForBatch.includes(email)) {
+        const cacheKey = 'gcal_' + email;
+        const eventsToCache = allRecruiterEvents[email];
+        
+        // Store for 23 hours (82800 seconds). Next full sync will refresh it.
+        scriptCache.put(cacheKey, JSON.stringify(eventsToCache), 82800);
+        log('✅ Successfully primed cache for ' + email + ' with ' + eventsToCache.length + ' events.', 'NORMAL');
+      }
     }
   } catch (e) {
     log('❌ CRITICAL ERROR: Failed to prime GCal cache. Error: ' + e.toString(), 'NORMAL');
   }
   // --- End Cache Priming Step ---
+ 
+  // --- v12.0: Advance the batch counter only on successful completion ---
+  advanceBatchCounter();
 
-  log('\n✅ NIGHTLY FULL SYNC completed. Total UrlFetch calls made: ' + urlFetchCounter, 'NORMAL');
+  log('\n✅ NIGHTLY FULL SYNC (Batch ' + currentBatch + '/' + totalBatches + ') completed. Total UrlFetch calls made: ' + urlFetchCounter, 'NORMAL');
+}
+
+/**
+ * [NEW HELPER v12.0]
+ * Advances the batch counter in the cache after a successful run.
+ */
+function advanceBatchCounter() {
+  const scriptCache = CacheService.getScriptCache();
+  const cacheKey = 'fullSync_currentBatch';
+  try {
+    let currentBatch = parseInt(scriptCache.get(cacheKey), 10);
+    if (isNaN(currentBatch) || currentBatch <= 0) {
+      currentBatch = 1;
+    }
+    scriptCache.put(cacheKey, (currentBatch + 1).toString(), 3600); // Store for 1 hour
+    log('Advanced batch counter to ' + (currentBatch + 1) + '.', 'DEBUG');
+  } catch (e) {
+    log('❌ CRITICAL ERROR: Could not advance the batch counter in the cache. Error: ' + e.toString(), 'NORMAL');
+  }
 }
 
 
@@ -544,6 +597,46 @@ function findGCalDeltas(cachedEvents, currentEvents) {
   });
 
   return { newOrUpdated: newOrUpdated, deleted: deleted };
+}
+
+/**
+ * [NEW HELPER v12.0]
+ * Manages batching of recruiters for the full sync.
+ * Uses CacheService to track the current batch number.
+ */
+function getNextRecruiterBatch(config, allRecruiterConfigs) {
+  const scriptCache = CacheService.getScriptCache();
+  const cacheKey = 'fullSync_currentBatch';
+  const batchSize = parseInt(config.RECRUITER_BATCH_SIZE, 10) || 10;
+
+  const allRecruiterEmails = [...new Set(allRecruiterConfigs.map(c => c.email))];
+  const totalBatches = Math.ceil(allRecruiterEmails.length / batchSize);
+
+  // Get current batch number from cache, or start at 1
+  let currentBatch = parseInt(scriptCache.get(cacheKey), 10);
+  if (isNaN(currentBatch) || currentBatch <= 0) {
+    currentBatch = 1;
+  }
+
+  // If the current batch number is greater than the total, we're done.
+  // Reset the counter to 1 for the next nightly cycle.
+  if (currentBatch > totalBatches) {
+    scriptCache.put(cacheKey, '1', 86400); // Reset for next day
+    return { currentBatch: currentBatch, totalBatches: totalBatches, recruiterEmailsForBatch: [] };
+  }
+
+  // Calculate the slice of recruiters for the current batch
+  const startIndex = (currentBatch - 1) * batchSize;
+  const endIndex = startIndex + batchSize;
+  const recruiterEmailsForBatch = allRecruiterEmails.slice(startIndex, endIndex);
+
+  // BATCH COUNTER IS NOW ADVANCED SEPARATELY AFTER SUCCESSFUL EXECUTION
+
+  return {
+    currentBatch: currentBatch,
+    totalBatches: totalBatches,
+    recruiterEmailsForBatch: recruiterEmailsForBatch
+  };
 }
 
 
