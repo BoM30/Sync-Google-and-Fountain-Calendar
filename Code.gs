@@ -119,7 +119,14 @@ function setupScriptProperties() {
      * NEW v12.0: Recruiter Batch Size
      * Number of recruiters to process in a single execution of syncCalendars_Full.
      */
-    'RECRUITER_BATCH_SIZE': '10'
+    'RECRUITER_BATCH_SIZE': '10',
+
+    /**
+     * NEW v12.1: Trigger Schedule Configuration
+     */
+    'TRIGGER_START_HOUR': '1', // The hour (0-23) to start the first trigger.
+    'TRIGGER_INTERVAL_MINUTES': '15', // The number of minutes between triggers.
+    'TRIGGER_COUNT': '10' // The total number of triggers to create.
   };
 
   try {
@@ -143,6 +150,16 @@ function syncCalendars_Full() {
   SCRIPT_LOG_LEVEL = config.LOGGING_LEVEL || 'NORMAL';
   urlFetchCounter = 0; // Reset API call counter
 
+  // --- v12.2: Locking Mechanism ---
+  const lock = LockService.getScriptLock();
+  // Wait for up to 10 seconds for the lock.
+  if (!lock.tryLock(10000)) {
+    log('⚠️ Skipping execution: An existing sync is still in progress.', 'NORMAL');
+    return;
+  }
+  // --- End Locking Mechanism ---
+
+  try {
   // --- v11.0: Quiet Hours Check (with Override) ---
   const overrideQuietHours = config.OVERRIDE_QUIET_HOURS_FULL_SYNC === 'true';
 
@@ -331,6 +348,12 @@ function syncCalendars_Full() {
   advanceBatchCounter();
 
   log('\n✅ NIGHTLY FULL SYNC (Batch ' + currentBatch + '/' + totalBatches + ') completed. Total UrlFetch calls made: ' + urlFetchCounter, 'NORMAL');
+  } finally {
+    // --- v12.2: Release the lock ---
+    lock.releaseLock();
+    log('Lock released.', 'DEBUG');
+    // --- End Release Lock ---
+  }
 }
 
 /**
@@ -979,6 +1002,64 @@ function deleteFountainSlot(apiKey, slotId) {
     log(' 	 	 ❌ Exception while deleting slot ' + slotId + '. Error: ' + e.toString(), 'NORMAL');
     log(e.stack, 'DEBUG');
   }
+}
+
+/**
+ * [NEW UTILITY v12.1]
+ * Programmatically creates a specific, limited set of triggers for the nightly sync.
+ */
+function setupNightlyTriggers() {
+  const targetFunctionName = 'syncCalendars_Full';
+  const triggers = ScriptApp.getProjectTriggers();
+
+  // 1. Delete all existing triggers for the target function to avoid duplicates.
+  log('Deleting existing triggers for ' + targetFunctionName + '...', 'NORMAL');
+  let deletedCount = 0;
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === targetFunctionName) {
+      ScriptApp.deleteTrigger(trigger);
+      deletedCount++;
+    }
+  });
+  log('✅ Deleted ' + deletedCount + ' existing trigger(s).', 'NORMAL');
+
+  // 2. Read the trigger configuration from Script Properties.
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const config = scriptProperties.getProperties();
+
+  const numberOfTriggers = parseInt(config.TRIGGER_COUNT, 10) || 10;
+  const intervalMinutes = parseInt(config.TRIGGER_INTERVAL_MINUTES, 10) || 15;
+  const startHour = parseInt(config.TRIGGER_START_HOUR, 10) || 1;
+
+  log('Trigger Configuration -> Count: ' + numberOfTriggers + ', Interval: ' + intervalMinutes + ' mins, Start Hour: ' + startHour + ':00', 'NORMAL');
+
+  const startTime = new Date();
+  startTime.setHours(startHour, 0, 0, 0); // Set to 1:00:00 AM today
+
+  // If 1 AM has already passed today, schedule it for tomorrow.
+  if (new Date() > startTime) {
+    startTime.setDate(startTime.getDate() + 1);
+    log('1 AM has already passed today. Scheduling triggers for tomorrow.', 'NORMAL');
+  } else {
+    log('Scheduling triggers for today, starting at 1 AM.', 'NORMAL');
+  }
+
+
+  // 3. Create the new triggers.
+  log('Creating ' + numberOfTriggers + ' new triggers...', 'NORMAL');
+  for (let i = 0; i < numberOfTriggers; i++) {
+    const triggerTime = new Date(startTime.getTime() + i * intervalMinutes * 60 * 1000);
+    try {
+      ScriptApp.newTrigger(targetFunctionName)
+        .timeBased()
+        .at(triggerTime)
+        .create();
+      log(' 	-> ✅ Created trigger #' + (i + 1) + ' to run at: ' + triggerTime.toLocaleString(), 'NORMAL');
+    } catch (e) {
+      log(' 	-> ❌ Failed to create trigger #' + (i + 1) + '. Error: ' + e.toString(), 'NORMAL');
+    }
+  }
+  log('✅ Trigger setup complete.', 'NORMAL');
 }
 
 
