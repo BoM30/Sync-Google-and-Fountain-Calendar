@@ -161,7 +161,8 @@ function syncCalendars_Full() {
 
   try {
   // --- v11.0: Quiet Hours Check (with Override) ---
-  const overrideQuietHours = config.OVERRIDE_QUIET_HOURS_FULL_SYNC === 'true';
+  // v12.3: Made case-insensitive
+  const overrideQuietHours = (config.OVERRIDE_QUIET_HOURS_FULL_SYNC || '').toLowerCase() === 'true';
 
   if (overrideQuietHours) {
     log('⚠️ Quiet Hours check for FULL SYNC is being overridden by script property. Running sync now...', 'NORMAL');
