@@ -161,7 +161,8 @@ function syncCalendars_Full() {
 
   try {
   // --- v11.0: Quiet Hours Check (with Override) ---
-  const overrideQuietHours = config.OVERRIDE_QUIET_HOURS_FULL_SYNC === 'true';
+  // v12.3: Made case-insensitive
+  const overrideQuietHours = (config.OVERRIDE_QUIET_HOURS_FULL_SYNC || '').toLowerCase() === 'true';
 
   if (overrideQuietHours) {
     log('⚠️ Quiet Hours check for FULL SYNC is being overridden by script property. Running sync now...', 'NORMAL');
@@ -643,9 +644,7 @@ function getNextRecruiterBatch(config, allRecruiterConfigs) {
   }
 
   // If the current batch number is greater than the total, we're done.
-  // Reset the counter to 1 for the next nightly cycle.
   if (currentBatch > totalBatches) {
-    scriptProperties.setProperty(propertyKey, '1'); // Reset for next day
     return { currentBatch: currentBatch, totalBatches: totalBatches, recruiterEmailsForBatch: [] };
   }
 
@@ -1023,8 +1022,12 @@ function setupNightlyTriggers() {
   });
   log('✅ Deleted ' + deletedCount + ' existing trigger(s).', 'NORMAL');
 
-  // 2. Read the trigger configuration from Script Properties.
+  // 2. Reset the batch counter to 1 for a clean start.
   const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty('fullSync_currentBatch', '1');
+  log('✅ Batch counter has been reset to 1 for the new nightly cycle.', 'NORMAL');
+
+  // 3. Read the trigger configuration from Script Properties.
   const config = scriptProperties.getProperties();
 
   const numberOfTriggers = parseInt(config.TRIGGER_COUNT, 10) || 10;
